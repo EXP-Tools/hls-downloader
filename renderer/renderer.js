@@ -39,6 +39,10 @@ const elBtnCloseAbout = $('btnCloseAbout');
 const elSitesModal = $('sitesModal');
 const elSitesList = $('sitesList');
 const elBtnCloseSites = $('btnCloseSites');
+const elSettingsAiEnabled = $('settingsAiEnabled');
+const elSettingsAiProvider = $('settingsAiProvider');
+const elSettingsAiModel = $('settingsAiModel');
+const elAiOptions = $('aiOptions');
 
 // ─── State ───
 let episodes = [];
@@ -70,9 +74,39 @@ async function openProxySettings() {
   elSettingsProxyPass.value = s.proxy?.password || '';
   elSettingsSaveDir.value = s.defaultSaveDir || '';
   elSettingsAutoMp4.checked = s.autoConvertMp4 || false;
+  elSettingsAiEnabled.checked = s.aiEnabled || false;
+  elAiOptions.style.display = s.aiEnabled ? '' : 'none';
   appSettings = s;
+
+  // Load providers and populate dropdowns
+  const providers = await window.api.getProviders();
+  elSettingsAiProvider.innerHTML = '<option value="">请选择...</option>';
+  providers.forEach(p => {
+    elSettingsAiProvider.innerHTML += `<option value="${p.key}">${p.key} (${p.baseURL?.substring(0, 30) || ''})</option>`;
+  });
+  if (s.aiProvider) elSettingsAiProvider.value = s.aiProvider;
+  updateModelDropdown(providers, s.aiModel);
+
+  elSettingsAiProvider.onchange = () => updateModelDropdown(providers, '');
+
   show(elSettingsModal);
 }
+
+function updateModelDropdown(providers, selected) {
+  const provKey = elSettingsAiProvider.value;
+  const prov = providers.find(p => p.key === provKey);
+  elSettingsAiModel.innerHTML = '<option value="">请选择模型</option>';
+  if (prov) {
+    prov.models.forEach(m => {
+      elSettingsAiModel.innerHTML += `<option value="${m.id}">${m.name || m.id}</option>`;
+    });
+  }
+  if (selected) elSettingsAiModel.value = selected;
+}
+
+elSettingsAiEnabled.addEventListener('change', () => {
+  elAiOptions.style.display = elSettingsAiEnabled.checked ? '' : 'none';
+});
 
 async function openAbout() {
   const info = await window.api.getAppInfo();
@@ -124,7 +158,10 @@ elBtnSaveSettings.addEventListener('click', async () => {
     proxy: cfg,
     defaultSaveDir: elSettingsSaveDir.value,
     autoConvertMp4: elSettingsAutoMp4.checked,
-    proxyEnabled: !!(cfg.host && cfg.port)
+    proxyEnabled: !!(cfg.host && cfg.port),
+    aiEnabled: elSettingsAiEnabled.checked,
+    aiProvider: elSettingsAiProvider.value,
+    aiModel: elSettingsAiModel.value
   };
   await window.api.saveSettings(s);
   appSettings = s;

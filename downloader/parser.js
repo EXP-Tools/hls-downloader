@@ -3,11 +3,11 @@ const { getParser } = require('./parsers');
 
 async function parseCatalog(sendLog, catalogUrl) {
   const parser = getParser(catalogUrl);
-  if (!parser) {
-    return { success: false, error: '不支持的站点, 目前支持: xgcartoon.com / twxgct.com / yfsp.tv' };
-  }
-
   const needsVisibleWindow = catalogUrl.includes('yfsp.tv');
+
+  if (!parser) {
+    return { success: false, error: 'unsupported', message: '不支持的站点, 可开启 AI 辅助解析重试' };
+  }
 
   return new Promise((resolve) => {
     const win = new BrowserWindow({

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('api', {
   disableProxy: () => ipcRenderer.invoke('disable-proxy'),
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings) => ipcRenderer.invoke('save-settings', settings),
+  getProviders: () => ipcRenderer.invoke('get-providers'),
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   onProgress: (callback) => {
     const handler = (_event, data) => callback(data);

@@ -113,6 +113,29 @@
           </div>
           <span class="setting-hint">需要 ffmpeg</span>
         </div>
+        <div class="setting-divider"></div>
+        <div class="setting-row">
+          <label>AI 辅助解析</label>
+          <div class="toggle-switch">
+            <input type="checkbox" id="settingsAiEnabled" />
+            <label for="settingsAiEnabled" class="toggle-label"></label>
+          </div>
+          <span class="setting-hint">常规解析失败时用 AI 提取集数</span>
+        </div>
+        <div class="ai-options" id="aiOptions" style="display:none">
+          <div class="setting-row">
+            <label>服务商</label>
+            <select id="settingsAiProvider" class="proxy-select">
+              <option value="">请选择...</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>模型</label>
+            <select id="settingsAiModel" class="proxy-select">
+              <option value="">请先选择服务商</option>
+            </select>
+          </div>
+        </div>
       </div>
       <div class="modal-footer">
         <button id="btnDisableProxySettings" class="btn btn-secondary">关闭代理</button>

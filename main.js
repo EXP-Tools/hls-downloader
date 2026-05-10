@@ -4,6 +4,7 @@ const fs = require('fs');
 const { parseCatalog, extractVid, buildM3U8Url } = require('./downloader/parser');
 const { getParser } = require('./downloader/parsers');
 const { downloadHLS, convertToMp4 } = require('./downloader/hls-engine');
+const { readProviders, aiParseEpisodeList } = require('./downloader/ai-parser');
 
 let mainWindow = null;
 let cancelFlag = false;
@@ -19,7 +20,10 @@ function loadAppSettings() {
       proxy: { type: 'http', host: '', port: '', username: '', password: '' },
       defaultSaveDir: '',
       autoConvertMp4: false,
-      proxyEnabled: false
+      proxyEnabled: false,
+      aiEnabled: false,
+      aiProvider: '',
+      aiModel: ''
     };
   }
 }
@@ -30,87 +34,50 @@ function saveAppSettings() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 960,
-    height: 720,
-    minWidth: 800,
-    minHeight: 600,
+    width: 960, height: 720, minWidth: 800, minHeight: 600,
     title: 'HLS 批量下载器',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
-      nodeIntegration: false,
-      contextIsolation: true
+      nodeIntegration: false, contextIsolation: true
     }
   });
-
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
-
-  const menu = buildMenu();
-  mainWindow.setMenu(menu);
-
-  if (process.argv.includes('--dev')) {
-    mainWindow.webContents.openDevTools();
-  }
+  mainWindow.setMenu(buildMenu());
+  if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools();
 }
 
 function buildMenu() {
-  const template = [
+  return Menu.buildFromTemplate([
     {
       label: '设置',
       submenu: [
-        {
-          label: '代理设置',
-          click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.executeJavaScript('openProxySettings()').catch(() => {});
-            }
-          }
-        },
+        { label: '代理设置', click: () => mainWindow?.webContents.executeJavaScript('openProxySettings()').catch(() => {}) },
         { type: 'separator' },
-        {
-          label: '自动转 MP4',
-          type: 'checkbox',
-          checked: appSettings.autoConvertMp4,
-          click: (item) => {
-            appSettings.autoConvertMp4 = item.checked;
-            saveAppSettings();
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.executeJavaScript(`onSettingChanged('autoConvertMp4', ${item.checked})`).catch(() => {});
-            }
-            sendLog(`自动转 MP4: ${appSettings.autoConvertMp4 ? '开启' : '关闭'}`);
-          }
-        }
+        { label: 'AI 辅助解析', type: 'checkbox', checked: appSettings.aiEnabled, click: (item) => {
+          appSettings.aiEnabled = item.checked; saveAppSettings();
+          mainWindow?.webContents.executeJavaScript(`onSettingChanged('aiEnabled', ${item.checked})`).catch(() => {});
+          sendLog(`AI 辅助解析: ${item.checked ? '开启' : '关闭'}`);
+        }},
+        { type: 'separator' },
+        { label: '自动转 MP4', type: 'checkbox', checked: appSettings.autoConvertMp4, click: (item) => {
+          appSettings.autoConvertMp4 = item.checked; saveAppSettings();
+          mainWindow?.webContents.executeJavaScript(`onSettingChanged('autoConvertMp4', ${item.checked})`).catch(() => {});
+          sendLog(`自动转 MP4: ${item.checked ? '开启' : '关闭'}`);
+        }}
       ]
     },
     {
       label: '关于',
       submenu: [
-        {
-          label: '版本信息',
-          click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.executeJavaScript('openAbout()').catch(() => {});
-            }
-          }
-        },
-        {
-          label: '支持站点',
-          click: () => {
-            if (mainWindow && !mainWindow.isDestroyed()) {
-              mainWindow.webContents.executeJavaScript('openSites()').catch(() => {});
-            }
-          }
-        }
+        { label: '版本信息', click: () => mainWindow?.webContents.executeJavaScript('openAbout()').catch(() => {}) },
+        { label: '支持站点', click: () => mainWindow?.webContents.executeJavaScript('openSites()').catch(() => {}) }
       ]
     }
-  ];
-
-  return Menu.buildFromTemplate(template);
+  ]);
 }
 
 function sendLog(msg) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('download-log', msg);
-  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('download-log', msg);
 }
 
 function sendProgress(current, total, episodeIndex, episodeTitle) {
@@ -131,6 +98,24 @@ async function applyProxy() {
   }
 }
 
+async function aiExtract(url) {
+  const providers = readProviders();
+  const provider = providers.find(p => p.key === appSettings.aiProvider);
+  if (!provider) throw new Error('AI 服务商未配置');
+  const aiWin = new BrowserWindow({
+    width: 1200, height: 800, show: false,
+    webPreferences: { nodeIntegration: false, contextIsolation: true }
+  });
+  await aiWin.loadURL(url);
+  await new Promise(r => setTimeout(r, 4000));
+  const [html, pageUrl] = await Promise.all([
+    aiWin.webContents.executeJavaScript('document.documentElement.outerHTML'),
+    aiWin.webContents.getURL()
+  ]);
+  aiWin.destroy();
+  return aiParseEpisodeList(provider, appSettings.aiModel, pageUrl, html);
+}
+
 app.whenReady().then(() => {
   loadAppSettings();
   applyProxy();
@@ -140,7 +125,33 @@ app.whenReady().then(() => {
     try {
       cancelFlag = false;
       sendLog('正在解析目录页面...');
-      const result = await parseCatalog((msg) => sendLog(msg), url);
+      let result = await parseCatalog((msg) => sendLog(msg), url);
+
+      if (result.success && result.episodes.length === 0 && appSettings.aiEnabled && appSettings.aiProvider && appSettings.aiModel) {
+        sendLog('常规解析为空, 尝试 AI 解析...');
+        try {
+          result.episodes = await aiExtract(url);
+          if (result.episodes.length > 0) sendLog(`AI 解析找到 ${result.episodes.length} 集`);
+          else sendLog('AI 解析也未找到集数');
+        } catch (aiErr) { sendLog(`AI 解析失败: ${aiErr.message}`); }
+      }
+
+      if (!result.success && result.error === 'unsupported' && appSettings.aiEnabled && appSettings.aiProvider && appSettings.aiModel) {
+        sendLog('站点无内置解析器, 尝试 AI 解析...');
+        try {
+          const eps = await aiExtract(url);
+          if (eps.length > 0) {
+            result = { success: true, episodes: eps };
+            sendLog(`AI 解析找到 ${eps.length} 集`);
+          } else {
+            result = { success: false, error: 'AI 解析未找到集数, 可能是单集视频页或页面结构特殊' };
+            sendLog('AI 解析未找到集数');
+          }
+        } catch (aiErr) {
+          sendLog(`AI 解析失败: ${aiErr.message}`);
+          result = { success: false, error: `AI 解析失败: ${aiErr.message}` };
+        }
+      }
 
       if (result.success && result.episodes.length > 0) {
         const siteParser = getParser(url);
@@ -162,7 +173,7 @@ app.whenReady().then(() => {
       sendLog('========================================');
       sendLog(`开始批量下载, 共 ${episodes.length} 集`);
       sendLog(`保存目录: ${saveDir}`);
-      if (options?.autoConvertMp4) sendLog('下载后自动转换 MP4');
+      if (appSettings.autoConvertMp4) sendLog('下载后自动转换 MP4');
       sendLog('========================================');
 
       const results = [];
@@ -172,17 +183,15 @@ app.whenReady().then(() => {
         sendLog('');
         sendLog(`--- [${i + 1}/${episodes.length}] ${ep.title} ---`);
 
-        let vid = null;
         try {
           sendLog('正在加载视频页面提取 vid...');
-          try {
-            vid = await extractVid((msg) => sendLog(msg), ep.url);
-          } catch (e1) {
-            const fallbackUrl = ep._originalUrl;
-            if (fallbackUrl && fallbackUrl !== ep.url) {
-              sendLog(`直连失败, 尝试原始链接...`);
-              vid = await extractVid((msg) => sendLog(msg), fallbackUrl);
-            } else { throw e1; }
+          let vid;
+          try { vid = await extractVid((msg) => sendLog(msg), ep.url); }
+          catch (e1) {
+            if (ep._originalUrl && ep._originalUrl !== ep.url) {
+              sendLog('直连失败, 尝试原始链接...');
+              vid = await extractVid((msg) => sendLog(msg), ep._originalUrl);
+            } else throw e1;
           }
 
           const m3u8Url = buildM3U8Url(vid);
@@ -197,21 +206,12 @@ app.whenReady().then(() => {
           );
 
           let finalPath = result.outputPath;
-
-          // Auto-convert to MP4 if enabled
           if (appSettings.autoConvertMp4) {
             sendLog('正在转换为 MP4...');
-            finalPath = await convertToMp4(
-              (msg) => sendLog(msg),
-              result.outputPath
-            );
-            sendLog(`MP4: ${finalPath}`);
+            finalPath = await convertToMp4((msg) => sendLog(msg), result.outputPath);
           }
 
-          results.push({
-            episode: ep.title, status: 'ok',
-            path: finalPath, resolution: result.resolution
-          });
+          results.push({ episode: ep.title, status: 'ok', path: finalPath, resolution: result.resolution });
         } catch (e) {
           sendLog(`失败: ${e.message}`);
           results.push({ episode: ep.title, status: 'failed', error: e.message });
@@ -219,10 +219,9 @@ app.whenReady().then(() => {
       }
 
       const ok = results.filter(r => r.status === 'ok').length;
-      const fail = results.filter(r => r.status === 'failed').length;
       sendLog('');
       sendLog('========================================');
-      sendLog(`下载完成: 成功 ${ok} / 失败 ${fail}`);
+      sendLog(`下载完成: 成功 ${ok} / 失败 ${results.length - ok}`);
       sendLog('========================================');
       return { success: true, results };
     } catch (e) {
@@ -233,24 +232,18 @@ app.whenReady().then(() => {
 
   ipcMain.handle('select-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
-    if (result.canceled) return null;
-    return result.filePaths[0];
+    return result.canceled ? null : result.filePaths[0];
   });
 
   ipcMain.handle('open-directory', async (_event, dir) => {
-    if (dir && fs.existsSync(dir)) {
-      shell.openPath(dir);
-      return { success: true };
-    }
+    if (dir && fs.existsSync(dir)) { shell.openPath(dir); return { success: true }; }
     return { success: false, error: '目录不存在' };
   });
 
   ipcMain.handle('open-image', async (_event, imgPath) => {
     let realPath = imgPath;
     try { realPath = new URL(imgPath).pathname; } catch (_) {}
-    if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(realPath)) {
-      realPath = realPath.substring(1);
-    }
+    if (process.platform === 'win32' && /^\/[a-zA-Z]:/.test(realPath)) realPath = realPath.substring(1);
     if (!fs.existsSync(realPath)) return { success: false, error: '图片不存在' };
     shell.openPath(realPath);
     return { success: true };
@@ -261,43 +254,32 @@ app.whenReady().then(() => {
       const { type, host, port, username, password } = config;
       appSettings.proxy = { type, host, port, username, password };
       appSettings.proxyEnabled = true;
-
       const scheme = type === 'socks5' ? 'socks5' : 'http';
       const auth = username ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : '';
-      await session.defaultSession.setProxy({
-        proxyRules: `${scheme}://${auth}${host}:${port}`,
-        proxyBypassRules: '<local>'
-      });
-
+      await session.defaultSession.setProxy({ proxyRules: `${scheme}://${auth}${host}:${port}`, proxyBypassRules: '<local>' });
       saveAppSettings();
       sendLog(`代理已启用: ${scheme}://${host}:${port}`);
       return { success: true };
-    } catch (e) {
-      sendLog(`代理设置失败: ${e.message}`);
-      return { success: false, error: e.message };
-    }
+    } catch (e) { return { success: false, error: e.message }; }
   });
 
   ipcMain.handle('disable-proxy', async () => {
-    try {
-      appSettings.proxyEnabled = false;
-      await session.defaultSession.setProxy({ proxyRules: '' });
-      saveAppSettings();
-      sendLog('代理已关闭');
-      return { success: true };
-    } catch (e) {
-      return { success: false, error: e.message };
-    }
+    appSettings.proxyEnabled = false;
+    await session.defaultSession.setProxy({ proxyRules: '' });
+    saveAppSettings();
+    sendLog('代理已关闭');
+    return { success: true };
   });
 
-  ipcMain.handle('get-settings', () => {
-    return {
-      proxy: appSettings.proxy,
-      defaultSaveDir: appSettings.defaultSaveDir,
-      autoConvertMp4: appSettings.autoConvertMp4,
-      proxyEnabled: appSettings.proxyEnabled
-    };
-  });
+  ipcMain.handle('get-settings', () => ({
+    proxy: appSettings.proxy,
+    defaultSaveDir: appSettings.defaultSaveDir,
+    autoConvertMp4: appSettings.autoConvertMp4,
+    proxyEnabled: appSettings.proxyEnabled,
+    aiEnabled: appSettings.aiEnabled,
+    aiProvider: appSettings.aiProvider,
+    aiModel: appSettings.aiModel
+  }));
 
   ipcMain.handle('save-settings', (_event, settings) => {
     appSettings = { ...appSettings, ...settings };
@@ -311,23 +293,20 @@ app.whenReady().then(() => {
       version: pkg.version,
       author: 'Stream Recorder 逆向分析 & Electron 实现',
       sites: [
-        { name: '西瓜卡通 (xgcartoon.com)', status: '完全支持', desc: '动画/影视目录页解析 + 批量下载' },
-        { name: '西瓜卡通 (twxgct.com)', status: '完全支持', desc: '直接视频页下载' },
-        { name: '爱壹帆国际版 (yfsp.tv)', status: '部分支持', desc: '需绕过 CloudFront 人机校验, 登录后可用' }
+        { name: '西瓜卡通 (xgcartoon.com / twxgct.com)', status: '完全支持', desc: '动画/影视目录页解析 + 批量下载' },
+        { name: '爱壹帆国际版 (yfsp.tv)', status: '部分支持', desc: '需绕过 CloudFront 人机校验' },
+        { name: '通用 AI 解析', status: 'Beta', desc: '设置中开启 AI 辅助解析, 可解析任意站点' }
       ]
     };
   });
 
-  ipcMain.on('cancel-download', () => {
-    cancelFlag = true;
-    sendLog('正在取消...');
-  });
+  ipcMain.handle('get-providers', () => readProviders().map(p => ({
+    key: p.key, npm: p.npm, baseURL: p.baseURL, models: p.models
+  })));
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
+  ipcMain.on('cancel-download', () => { cancelFlag = true; sendLog('正在取消...'); });
+
+  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
