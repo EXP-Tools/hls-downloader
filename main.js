@@ -194,7 +194,8 @@ app.whenReady().then(() => {
             } else throw e1;
           }
 
-          const m3u8Url = buildM3U8Url(vid);
+          // If vid is a full URL, use it directly; otherwise construct from vid
+          const m3u8Url = (vid && vid.startsWith('http')) ? vid : buildM3U8Url(vid);
           sendLog(`m3u8: ${m3u8Url}`);
 
           const safeTitle = ep.title.replace(/[\\/:*?"<>|]/g, '_').substring(0, 80);

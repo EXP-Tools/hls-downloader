@@ -120,11 +120,19 @@ async function parseCatalog(sendLog, catalogUrl) {
 async function extractVid(sendLog, videoPageUrl) {
   if (sendLog) sendLog(`加载视频页: ${videoPageUrl}`);
 
+  const isRouVideo = videoPageUrl.includes('rou.video');
+
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({
-      width: 1024, height: 768, show: false,
+      width: 1024, height: 768,
+      show: isRouVideo,
       webPreferences: { nodeIntegration: false, contextIsolation: true }
     });
+
+    if (isRouVideo) {
+      win.setTitle('rou.video - 请点击播放视频, m3u8 将自动捕获');
+    }
+
     let resolved = false;
 
     const done = (err, vid) => {
@@ -137,29 +145,58 @@ async function extractVid(sendLog, videoPageUrl) {
     };
 
     const timer = setTimeout(() => {
-      done(new Error('提取 vid 超时 (30s)'));
-    }, 30000);
+      done(new Error(isRouVideo ? '等待超时 (60s), 请点击页面播放视频' : '提取 vid 超时 (30s)'));
+    }, isRouVideo ? 60000 : 30000);
 
     // Network monitor: capture vid from CDN/player requests
     const ses = win.webContents.session;
-    ses.webRequest.onBeforeRequest(
-      { urls: [
-        '*://pframe.xgcartoon.com/*',
-        '*://*.xgcartoon.com/player*',
-        '*://*.bzcdn.net/*/playlist.m3u8*',
-        '*://*.yfsp.tv/*m3u8*',
-        '*://*.yfsp.tv/api/*'
-      ]},
+
+    const baseUrls = [
+      '*://pframe.xgcartoon.com/*',
+      '*://*.xgcartoon.com/player*',
+      '*://*.bzcdn.net/*/playlist.m3u8*',
+      '*://*.bzcdn.net/*/video.m3u8*',
+      '*://*.yfsp.tv/*m3u8*',
+      '*://*.yfsp.tv/api/*',
+      '*://rou.video/api/*/play*',
+    ];
+
+    // For rou.video, also monitor for any m3u8 URLs from CDN + MIME detection
+    if (isRouVideo) {
+      baseUrls.push(
+        '*://v.rn244.xyz/*',
+        '*://v.rn245.xyz/*', '*://v.rn246.xyz/*',
+        '*://v.rn247.xyz/*', '*://v.rn248.xyz/*', '*://v.rn249.xyz/*',
+        '*://*/*.m3u8*', '*://*/*playlist*', '*://*/*master.m3u8*'
+      );
+    }
+
+    ses.webRequest.onBeforeRequest({ urls: baseUrls },
       (details, callback) => {
-        const vidMatch = details.url.match(/vid=([^&]+)/);
+        const url = details.url;
+        const isM3u8 = url.includes('.m3u8') || url.includes('playlist') || url.includes('master.m3u');
+
+        // For rou.video: monitor any m3u8-looking URL from any domain
+        if (isRouVideo && isM3u8 && !url.includes('.vtt') && !url.includes('/thumbs/')) {
+          if (sendLog) sendLog(`[网络检测] m3u8: ${url.substring(0, 120)}`);
+          done(null, url);
+        }
+
+        const vidMatch = url.match(/vid=([^&]+)/);
         if (vidMatch && !resolved) {
           if (sendLog) sendLog(`[网络检测] vid: ${vidMatch[1]}`);
           done(null, vidMatch[1]);
         }
-        const cdnMatch = details.url.match(/bzcdn\.net\/([a-f0-9-]{20,})\/playlist/);
+        const cdnMatch = url.match(/bzcdn\.net\/([a-f0-9-]{20,})\/playlist/);
         if (cdnMatch && !resolved) {
           if (sendLog) sendLog(`[网络检测] vid (CDN): ${cdnMatch[1]}`);
           done(null, cdnMatch[1]);
+        }
+        // rou.video: extract full m3u8 URL
+        const rouMatch = url.match(/\/hls\/([a-z0-9]+)\//i);
+        if (rouMatch && !resolved && !url.includes('/thumbs/') && !url.includes('.vtt')) {
+          if (sendLog) sendLog(`[网络检测] rou m3u8: ${url.substring(0, 120)}`);
+          done(null, url);
         }
         callback({});
       }
@@ -172,6 +209,45 @@ async function extractVid(sendLog, videoPageUrl) {
           done(new Error(`页面返回服务端错误: ${videoPageUrl.substring(0, 80)}`));
           return;
         }
+
+        // For rou.video: call the play API from within the page context (has cookies)
+        if (videoPageUrl.includes('rou.video')) {
+          try {
+            const apiResult = await win.webContents.executeJavaScript(`
+              (async function() {
+                try {
+                  var vid = location.pathname.split('/').pop();
+                  var res = await fetch('/api/v/' + vid + '/play', { method: 'POST' });
+                  var data = await res.json();
+                  return JSON.stringify(data);
+                } catch(e) {
+                  return 'ERROR:' + e.message;
+                }
+              })()
+            `);
+            if (apiResult && !apiResult.startsWith('ERROR')) {
+              const data = JSON.parse(apiResult);
+              const m3u8 = data.url || data.m3u8 || data.playlist || data.src || data.videoUrl || '';
+              const bodyM3u8 = (typeof data === 'string' ? data : JSON.stringify(data)).match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/i);
+              if (m3u8) {
+                if (sendLog) sendLog(`[API] rou m3u8: ${m3u8.substring(0, 120)}`);
+                done(null, m3u8);
+                return;
+              } else if (bodyM3u8) {
+                if (sendLog) sendLog(`[API] rou m3u8 (body): ${bodyM3u8[0].substring(0, 120)}`);
+                done(null, bodyM3u8[0]);
+                return;
+              } else {
+                if (sendLog) sendLog(`[API] rou 响应: ${JSON.stringify(data).substring(0, 200)}`);
+              }
+            }
+          } catch (e) {
+            if (sendLog) sendLog(`[API] rou 调用失败: ${e.message}`);
+          }
+        }
+
+        // For rou.video: skip iframe/vid loop, rely on network monitor
+        if (isRouVideo) return;
 
         for (let attempt = 0; attempt < 10; attempt++) {
           if (resolved) return;

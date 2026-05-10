@@ -52,6 +52,36 @@ const siteParsers = [
     }
   },
 
+  // ====== 肉视频 rou.video ======
+  {
+    name: 'rouvideo',
+    match: (url) => /rou\.video/.test(url),
+
+    parseEpisodeList(html, url) {
+      return null;
+    },
+
+    jsExtract() {
+      return `
+        function() {
+          var eps = [];
+          var title = (document.querySelector('h1, [class*=title]') || {}).textContent || document.title || '';
+          title = title.replace(/\\s+/g, ' ').trim();
+          if (!title || title.length < 2) {
+            title = document.title.replace(/\\s*-.*/, '').trim();
+          }
+          if (!title) title = '视频';
+          eps.push({ title: title, url: location.href });
+          return eps;
+        }
+      `;
+    },
+
+    transformUrl(ep) {
+      return ep.url;
+    }
+  },
+
   // ====== 爱壹帆 yfsp.tv ======
   {
     name: 'yfsp',
