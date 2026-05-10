@@ -1,0 +1,13 @@
+{
+  "name": "hls-downloader",
+  "version": "1.0.0",
+  "description": "HLS Video Batch Downloader - 批量下载 HLS 视频",
+  "main": "main.js",
+  "scripts": {
+    "start": "npx electron .",
+    "dev": "npx electron . --dev"
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  }
+}

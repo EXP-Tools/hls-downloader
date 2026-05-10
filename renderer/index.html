@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' img-src 'self' file:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'">
+  <title>HLS 批量下载器</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1>HLS 批量下载器</h1>
+      <p>输入动漫/影视目录页 URL，自动解析集数并批量下载。代理设置请通过菜单栏「设置」</p>
+    </header>
+
+    <section class="input-section">
+      <div class="input-row">
+        <input type="text" id="catalogUrl" placeholder="输入目录页 URL (xgcartoon / twxgct / yfsp)" />
+        <button id="btnParse" class="btn btn-primary">解析集数</button>
+      </div>
+      <div class="input-row">
+        <input type="text" id="saveDir" placeholder="选择保存目录..." readonly />
+        <button id="btnSelectDir" class="btn btn-secondary">选择目录</button>
+        <button id="btnOpenDir" class="btn btn-secondary" title="打开目录">🗀</button>
+      </div>
+    </section>
+
+    <section class="episode-section" id="episodeSection" style="display:none">
+      <div class="episode-header">
+        <span class="episode-count" id="episodeCount">共 0 集</span>
+        <div class="episode-actions">
+          <button id="btnSelectAll" class="btn btn-sm">全选</button>
+          <button id="btnDeselectAll" class="btn btn-sm">取消全选</button>
+          <button id="btnInvert" class="btn btn-sm">反选</button>
+        </div>
+      </div>
+      <div class="episode-list" id="episodeList"></div>
+      <div class="episode-footer">
+        <button id="btnDownload" class="btn btn-primary btn-large" disabled>开始下载</button>
+        <button id="btnCancel" class="btn btn-danger" style="display:none">取消下载</button>
+        <div class="donate-section">
+          <div class="donate-qr">
+            <img src="../imgs/wechat.png" alt="微信打赏" title="微信打赏" />
+            <span>微信打赏</span>
+          </div>
+          <div class="donate-qr">
+            <img src="../imgs/alipay.png" alt="支付宝打赏" title="支付宝打赏" />
+            <span>支付宝打赏</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="log-section" id="logSection" style="display:none">
+      <div class="log-header">
+        <h3>下载日志</h3>
+        <button id="btnClearLog" class="btn btn-sm">清空</button>
+      </div>
+      <div class="log-container" id="logContainer"></div>
+    </section>
+
+    <section class="progress-section" id="progressSection" style="display:none">
+      <div class="progress-bar-bg">
+        <div class="progress-bar-fill" id="progressBar"></div>
+      </div>
+      <div class="progress-text" id="progressText">0/0</div>
+    </section>
+
+    <div class="status-bar" id="statusBar">就绪</div>
+  </div>
+
+  <!-- Settings Dialog -->
+  <div class="modal-overlay" id="settingsModal" style="display:none">
+    <div class="modal-box">
+      <h2>代理设置</h2>
+      <div class="modal-body">
+        <div class="setting-row">
+          <label>协议</label>
+          <select id="settingsProxyType" class="proxy-select">
+            <option value="http">HTTP</option>
+            <option value="socks5">SOCKS5</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label>主机</label>
+          <input type="text" id="settingsProxyHost" placeholder="127.0.0.1" />
+        </div>
+        <div class="setting-row">
+          <label>端口</label>
+          <input type="text" id="settingsProxyPort" placeholder="1080" style="width:100px" />
+        </div>
+        <div class="setting-row">
+          <label>用户名</label>
+          <input type="text" id="settingsProxyUser" placeholder="可选" />
+        </div>
+        <div class="setting-row">
+          <label>密码</label>
+          <input type="password" id="settingsProxyPass" placeholder="可选" />
+        </div>
+        <div class="setting-divider"></div>
+        <div class="setting-row">
+          <label>默认路径</label>
+          <input type="text" id="settingsSaveDir" placeholder="选择默认下载目录..." readonly />
+          <button id="btnSettingsSelectDir" class="btn btn-sm">选择</button>
+        </div>
+        <div class="setting-divider"></div>
+        <div class="setting-row">
+          <label>自动转 MP4</label>
+          <div class="toggle-switch">
+            <input type="checkbox" id="settingsAutoMp4" />
+            <label for="settingsAutoMp4" class="toggle-label"></label>
+          </div>
+          <span class="setting-hint">需要 ffmpeg</span>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnDisableProxySettings" class="btn btn-secondary">关闭代理</button>
+        <button id="btnSaveSettings" class="btn btn-primary">保存</button>
+        <button id="btnCloseSettings" class="btn btn-sm">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- About Dialog -->
+  <div class="modal-overlay" id="aboutModal" style="display:none">
+    <div class="modal-box modal-sm">
+      <h2>关于</h2>
+      <div class="modal-body">
+        <div class="about-item"><strong>版本:</strong> <span id="aboutVersion">-</span></div>
+        <div class="about-item"><strong>作者:</strong> <span id="aboutAuthor">-</span></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCloseAbout" class="btn btn-sm">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sites Dialog -->
+  <div class="modal-overlay" id="sitesModal" style="display:none">
+    <div class="modal-box modal-lg">
+      <h2>支持站点</h2>
+      <div class="modal-body" id="sitesList">
+      </div>
+      <div class="modal-footer">
+        <button id="btnCloseSites" class="btn btn-sm">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
